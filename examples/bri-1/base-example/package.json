@@ -29,7 +29,7 @@
     "loglevel": "^1.6.8",
     "provide-js": "^1.3.3",
     "solc": "^0.6.1",
-    "zokrates-js": "1.0.23"
+    "zokrates-js": "1.0.25"
   },
   "devDependencies": {
     "@types/jsonwebtoken": "^8.3.4",

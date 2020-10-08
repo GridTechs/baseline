@@ -1,6 +1,6 @@
 import { IBaselineRPC, IBlockchainService, IRegistry, IVault, baselineServiceFactory, baselineProviderProvide } from '@baseline-protocol/api';
 import { IMessagingService, messagingProviderNats, messagingServiceFactory } from '@baseline-protocol/messaging';
-import { IZKSnarkCircuitProvider, IZKSnarkCompilationArtifacts, IZKSnarkTrustedSetupArtifacts, zkSnarkCircuitProviderServiceFactory, zkSnarkCircuitProviderServiceZokrates } from '@baseline-protocol/privacy';
+import { IZKSnarkCircuitProvider, IZKSnarkCompilationArtifacts, IZKSnarkTrustedSetupArtifacts, zkSnarkCircuitProviderServiceFactory, zkSnarkCircuitProviderServiceZokrates } from '../../../../core/privacy/dist/cjs'; //'@baseline-protocol/privacy';
 import { Message as ProtocolMessage, Opcode, PayloadType, marshalProtocolMessage, unmarshalProtocolMessage } from '@baseline-protocol/types';
 import { Application as Workgroup, Invite, Vault as ProvideVault, Organization, Token, Key as VaultKey } from '@provide/types';
 import { Capabilities, Ident, NChain, Vault, capabilitiesFactory, nchainClientFactory } from 'provide-js';
@@ -12,7 +12,7 @@ import * as log from 'loglevel';
 import { sha256 } from 'js-sha256';
 import { AuthService } from 'ts-natsutil';
 
-const baselineDocumentCircuitPath = '../../../lib/circuits/noopAgreement.zok';
+const baselineDocumentCircuitPath = '../../../lib/circuits/createAgreement.zok';
 const baselineProtocolMessageSubject = 'baseline.inbound';
 
 const zokratesImportResolver = (location, path) => {
@@ -287,13 +287,37 @@ export class ParticipantStack {
       address: await this.resolveOrganizationAddress(),
       authorized_bearer_token: await this.vendNatsAuthorization(),
       workflow_identifier: this.workflowIdentifier,
-    })
+    });
+  }
+
+  private marshalCircuitArg(val: string): number {
+    return parseInt(val, 10);
   }
 
   async generateProof(msg: any): Promise<any> {
-    // const raw = JSON.stringify(msg);
-    const privateInput = '2'; //keccak256(raw);
-    const computed = await this.zk?.computeWitness(this.baselineCircuitArtifacts!, [privateInput]);
+    const args = [
+      this.marshalCircuitArg('1').toString(),
+      {
+        value: [
+          this.marshalCircuitArg('3').toString(),
+          this.marshalCircuitArg('1').toString(),
+        ],
+        salt: [
+          this.marshalCircuitArg('3').toString(),
+          this.marshalCircuitArg('5').toString(),
+        ],
+      },
+      {
+        senderPublicKey: [
+          this.marshalCircuitArg('6').toString(),
+          this.marshalCircuitArg('7').toString(),
+        ],
+        agreementName: this.marshalCircuitArg('8').toString(),
+        agreementUrl: this.marshalCircuitArg('9').toString(),
+      }
+    ];
+
+    const computed = await this.zk?.computeWitness(this.baselineCircuitArtifacts!, args);
     const proof = await this.zk?.generateProof(
       this.baselineCircuitArtifacts?.program,
       computed?.witness,
