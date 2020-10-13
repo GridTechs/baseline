@@ -1,6 +1,6 @@
 import { IBaselineRPC, IBlockchainService, IRegistry, IVault, baselineServiceFactory, baselineProviderProvide } from '@baseline-protocol/api';
 import { IMessagingService, messagingProviderNats, messagingServiceFactory } from '@baseline-protocol/messaging';
-import { IZKSnarkCircuitProvider, IZKSnarkCompilationArtifacts, IZKSnarkTrustedSetupArtifacts, zkSnarkCircuitProviderServiceFactory, zkSnarkCircuitProviderServiceZokrates } from '../../../../core/privacy/dist/cjs'; //'@baseline-protocol/privacy';
+import { IZKSnarkCircuitProvider, IZKSnarkCompilationArtifacts, IZKSnarkTrustedSetupArtifacts, zkSnarkCircuitProviderServiceFactory, zkSnarkCircuitProviderServiceZokrates, Element, elementify } from '../../../../core/privacy/dist/cjs'; // '@baseline-protocol/privacy';
 import { Message as ProtocolMessage, Opcode, PayloadType, marshalProtocolMessage, unmarshalProtocolMessage } from '@baseline-protocol/types';
 import { Application as Workgroup, Invite, Vault as ProvideVault, Organization, Token, Key as VaultKey } from '@provide/types';
 import { Capabilities, Ident, NChain, Vault, capabilitiesFactory, nchainClientFactory } from 'provide-js';
@@ -8,11 +8,11 @@ import { readFileSync } from 'fs';
 import { compile as solidityCompile } from 'solc';
 import * as jwt from 'jsonwebtoken';
 import * as log from 'loglevel';
-// import { keccak256 } from 'js-sha3';
 import { sha256 } from 'js-sha256';
 import { AuthService } from 'ts-natsutil';
 
-const baselineDocumentCircuitPath = '../../../lib/circuits/createAgreement.zok';
+// const baselineDocumentCircuitPath = '../../../lib/circuits/createAgreement.zok';
+const baselineDocumentCircuitPath = '../../../lib/circuits/noopAgreement.zok';
 const baselineProtocolMessageSubject = 'baseline.inbound';
 
 const zokratesImportResolver = (location, path) => {
@@ -183,6 +183,7 @@ export class ParticipantStack {
           console.log('record is baselined...', payload.doc);
         } else {
           // baseline this record
+          console.log('generating proof...', msg);
           const proof = await this.generateProof(msg);
 
           // FIXME? call the verifier here w/ hash, proof, verification key
@@ -290,30 +291,31 @@ export class ParticipantStack {
     });
   }
 
-  private marshalCircuitArg(val: string): number {
-    return parseInt(val, 10);
+  private marshalCircuitArg(val: string, fieldBits?: number): string[] {
+    const el = elementify(val) as Element;
+    return el.field(fieldBits || 128, 1, true);
   }
 
   async generateProof(msg: any): Promise<any> {
     const args = [
-      this.marshalCircuitArg('1').toString(),
+      this.marshalCircuitArg('1'),
       {
         value: [
-          this.marshalCircuitArg('3').toString(),
-          this.marshalCircuitArg('1').toString(),
+          this.marshalCircuitArg('3'),
+          this.marshalCircuitArg('1'),
         ],
         salt: [
-          this.marshalCircuitArg('3').toString(),
-          this.marshalCircuitArg('5').toString(),
+          this.marshalCircuitArg('3'),
+          this.marshalCircuitArg('5'),
         ],
       },
       {
         senderPublicKey: [
-          this.marshalCircuitArg('6').toString(),
-          this.marshalCircuitArg('7').toString(),
+          this.marshalCircuitArg('6'),
+          this.marshalCircuitArg('7'),
         ],
-        agreementName: this.marshalCircuitArg('8').toString(),
-        agreementUrl: this.marshalCircuitArg('9').toString(),
+        agreementName: this.marshalCircuitArg('8'),
+        agreementUrl: this.marshalCircuitArg('9'),
       }
     ];
 
@@ -572,12 +574,12 @@ export class ParticipantStack {
     await this.compileBaselineCircuit();
 
     // perform trusted setup and deploy verifier/shield contract
-    const setupArtifacts = await this.zk?.setup(this.baselineCircuitArtifacts!.program);
+    const setupArtifacts = await this.zk?.setup(this.baselineCircuitArtifacts);
     const compilerOutput = JSON.parse(solidityCompile(JSON.stringify({
       language: 'Solidity',
       sources: {
         'verifier.sol': {
-          content: setupArtifacts?.verifierSource!,
+          content: setupArtifacts?.verifierSource?.replace(/\^0.6.1/g, '^0.7.3').replace(/view/g, ''),
         },
       },
       settings: {
@@ -588,6 +590,11 @@ export class ParticipantStack {
         }
       },
     })));
+
+    if (!compilerOutput.contracts || !compilerOutput.contracts['verifier.sol']) {
+      throw new Error('verifier contract compilation failed');
+    }
+
     const contractParams = compilerOutput.contracts['verifier.sol']['Verifier'];
     await this.deployWorkgroupContract('Verifier', 'verifier', contractParams);
     const verifierContract = await this.requireWorkgroupContract('verifier');
@@ -597,7 +604,7 @@ export class ParticipantStack {
     if (trackedShield) {
       this.contracts['shield'] = {
         address: shieldAddress,
-      }
+      };
     } else {
       console.log('WARNING: failed to track baseline shield contract');
     }
@@ -637,7 +644,7 @@ export class ParticipantStack {
       this.contracts[type] = resp;
       this.contracts[type].params = {
         compiled_artifact: params,
-      }
+      };
     }
     return resp;
   }
@@ -779,7 +786,12 @@ export class ParticipantStack {
       const vaults = await this.fetchVaults();
       this.babyJubJub = await this.createVaultKey(vaults[0].id!, 'babyJubJub');
       await this.createVaultKey(vaults[0].id!, 'secp256k1');
-      this.hdwallet = await this.createVaultKey(vaults[0].id!, 'BIP39', 'hdwallet', 'EthHdWallet'); // FIXME-- this should take a hardened `hd_derivation_path` param...
+      this.hdwallet = await this.createVaultKey(
+        vaults[0].id!,
+        'BIP39',
+        'hdwallet',
+        'EthHdWallet',
+      ); // FIXME-- this should take a hardened `hd_derivation_path` param...
 
       await this.registerWorkgroupOrganization();
     }
