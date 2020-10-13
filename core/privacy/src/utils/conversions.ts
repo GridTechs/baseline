@@ -370,7 +370,7 @@ export const decToBin = (decStr): string => {
  *
  * If the result has fewer limbs than it would need for compatibiity with the dsl, it's padded to the left with '0' limbs.
  */
-export const hexToFieldLimbs = (hexStr, limbBitLength, numberOfLimbs, silenceWarnings) => {
+export const hexToFieldLimbs = (hexStr, limbBitLength, numberOfLimbs, silenceWarnings): string[] => {
   requireHex(hexStr);
 
   // we first convert to binary, so that we can split into limbs of specific bit-lengths:
@@ -443,7 +443,7 @@ A vk of the form:
 is converted to:
 ['1','2','3','4','5','6',...]
  */
-export const flattenDeep = arr => {
+export const flattenDeep = (arr) => {
   return arr.reduce(
     (acc, val) => (Array.isArray(val) ? acc.concat(flattenDeep(val)) : acc.concat(val)),
     [],
