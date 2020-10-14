@@ -164,7 +164,11 @@ export class ParticipantStack {
       if (!payload.__hash) {
         const vault = await this.fetchVaults();
         const hash = sha256(msg.payload.toString()); // make a hash of the record...
-        const sig = (await this.signMessage(vault[0].id!, this.babyJubJub?.id!, hash)).signature; // use this in a real business case...
+        const sig = (await this.signMessage(
+          vault[0].id!,
+          this.babyJubJub?.id!,
+          Buffer.from(hash).toString('hex'),
+        )).signature;
 
         this.sendProtocolMessage(msg.sender, Opcode.Baseline, {
           doc: JSON.parse(msg.payload.toString()),
@@ -524,6 +528,33 @@ export class ParticipantStack {
     }));
   }
 
+  async requireVault(token?: string): Promise<ProvideVault> {
+    let vault;
+    const orgToken = token || (await this.createOrgToken()).token;
+
+    let interval;
+    const promises = [] as any;
+    promises.push(new Promise((resolve, reject) => {
+      interval = setInterval(async () => {
+        const vaults = await Vault.clientFactory(
+          orgToken!,
+          this.baselineConfig.vaultApiScheme!,
+          this.baselineConfig.vaultApiHost!,
+        ).fetchVaults({});
+        if (vaults && vaults.length > 0) {
+          vault = vaults[0];
+          resolve();
+        }
+      }, 2500);
+    }));
+
+    await Promise.all(promises);
+    clearInterval(interval);
+    interval = null;
+
+    return vault;
+  }
+
   async signMessage(vaultId: string, keyId: string, message: string): Promise<any> {
     const orgToken = (await this.createOrgToken()).token;
     const vault = Vault.clientFactory(orgToken!, this.baselineConfig?.vaultApiScheme, this.baselineConfig?.vaultApiHost);
@@ -533,14 +564,8 @@ export class ParticipantStack {
   async fetchKeys(): Promise<any> {
     const orgToken = (await this.createOrgToken()).token;
     const vault = Vault.clientFactory(orgToken!, this.baselineConfig?.vaultApiScheme, this.baselineConfig?.vaultApiHost);
-    const vaults = (await vault.fetchVaults({}));
-    return (await vault.fetchVaultKeys(vaults[0].id!, {}));
-  }
-
-  async unsealVault(): Promise<any> {
-    const orgToken = (await this.createOrgToken()).token;
-    const vault = Vault.clientFactory(orgToken!, this.baselineConfig?.vaultApiScheme, this.baselineConfig?.vaultApiHost);
-    return await vault.unseal(this.baselineConfig?.vaultSealUnsealKey);
+    const vlt = await this.requireVault(orgToken);
+    return (await vault.fetchVaultKeys(vlt.id!, {}));
   }
 
   async compileBaselineCircuit(): Promise<any> {
@@ -758,11 +783,15 @@ export class ParticipantStack {
     });
 
     if (this.org) {
-      await this.unsealVault();
-      const vaults = await this.fetchVaults();
-      this.babyJubJub = await this.createVaultKey(vaults[0].id!, 'babyJubJub');
-      await this.createVaultKey(vaults[0].id!, 'secp256k1');
-      this.hdwallet = await this.createVaultKey(vaults[0].id!, 'BIP39', 'hdwallet', 'EthHdWallet'); // FIXME-- this should take a hardened `hd_derivation_path` param...
+      const vault = await this.requireVault();
+      this.babyJubJub = await this.createVaultKey(vault.id!, 'babyJubJub');
+      await this.createVaultKey(vault.id!, 'secp256k1');
+      this.hdwallet = await this.createVaultKey(
+        vault.id!,
+        'BIP39',
+        'asymetric',
+        'sign/verify',
+      ); // FIXME-- this should take a hardened `hd_derivation_path` param...
 
       await this.registerWorkgroupOrganization();
     }
@@ -777,8 +806,8 @@ export class ParticipantStack {
 
     const subscription = await this.nats?.subscribe(baselineProtocolMessageSubject, (msg, err) => {
       this.protocolMessagesRx++;
-      this.dispatchProtocolMessage(unmarshalProtocolMessage(Buffer.from(msg.data))).catch((err) => {
-        console.log('protocol message handler encountered rejected promise', err);
+      this.dispatchProtocolMessage(unmarshalProtocolMessage(Buffer.from(msg.data))).catch((err2) => {
+        console.log('protocol message handler encountered rejected promise', err2);
       });
     });
 
@@ -795,7 +824,11 @@ export class ParticipantStack {
   ): Promise<ProtocolMessage> {
     const vaults = await this.fetchVaults();
     // const key = await this.createVaultKey(vaults[0].id!, 'secp256k1');
-    const signature = (await this.signMessage(vaults[0].id!, this.hdwallet!.id!, payload.toString('utf8'))).signature;
+    const signature = (await this.signMessage(
+      vaults[0].id!,
+      this.hdwallet!.id!,
+      payload.toString('hex'),
+    )).signature;
 
     return {
       opcode: opcode,
