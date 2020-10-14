@@ -183,7 +183,7 @@ export class ParticipantStack {
           console.log('record is baselined...', payload.doc);
         } else {
           // baseline this record
-          console.log('generating proof...', msg);
+          console.log('generating proof...', msg, msg.payload.toString());
           const proof = await this.generateProof(msg);
 
           // FIXME? call the verifier here w/ hash, proof, verification key
@@ -786,13 +786,8 @@ export class ParticipantStack {
       const vaults = await this.fetchVaults();
       this.babyJubJub = await this.createVaultKey(vaults[0].id!, 'babyJubJub');
       await this.createVaultKey(vaults[0].id!, 'secp256k1');
-      this.hdwallet = await this.createVaultKey(
-        vaults[0].id!,
-        'BIP39',
-        'hdwallet',
-        'EthHdWallet',
-      ); // FIXME-- this should take a hardened `hd_derivation_path` param...
-
+      // FIXME-- this should take a hardened `hd_derivation_path` param...
+      this.hdwallet = await this.createVaultKey(vaults[0].id!, 'BIP39');
       await this.registerWorkgroupOrganization();
     }
 
