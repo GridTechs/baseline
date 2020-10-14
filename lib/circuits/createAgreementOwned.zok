@@ -4,6 +4,10 @@ import "hashes/sha256/512bitPacked" as packed512Sha
 import "ecc/edwardsCompress" as edwardsCompress
 import "hashes/sha256/1024bit" as shaOf1024Bits
 import "utils/casts/bool_256_to_u32_8" as bool_256_to_u32_8
+import "ecc/edwardsScalarMult" as multiply
+import "utils/pack/bool/nonStrictUnpack256" as unpack256Bool
+import "ecc/babyjubjubParams" as context
+from "ecc/babyjubjubParams" import BabyJubJubParams
 
 struct Commitment {
   field[2] value
@@ -26,7 +30,7 @@ def convert(field[2] input) -> u32[8]:
   u32[4] msbBits = unpack128(input[1])
   return [...msbBits, ...lsbBits]
 
-def main(field publicInputHash, private Commitment inputCommitment, private Metadata inputMetadata) -> Agreement:
+def main(field publicInputHash, field[2] pk, private Commitment inputCommitment, private Metadata inputMetadata, private field sk) -> Agreement:
   u32[8] publicInputHashBits = unpack256(publicInputHash)
 
   // hash of the below private inputs must be equal to public input
@@ -43,6 +47,13 @@ def main(field publicInputHash, private Commitment inputCommitment, private Meta
 
   // Check: Compare final hash to public input hash; and Compare input
   bool out = publicInputHashBits == agreementHash && valueBits == agreementHash
+
+  // Check: Prove ownership of agreement
+  BabyJubJubParams ctx = context()
+  field[2] G = [ctx.Gu, ctx.Gv]
+  bool[256] skBits = unpack256Bool(sk)
+  field[2] ptExp = multiply(skBits, G, ctx)
+  bool owned = ptExp[0] == pk[0] && ptExp[1] == pk[1]
 
   // Prepare output object
   Agreement outputAgreement = Agreement { hash: agreementHash, senderPublicKey: inputMetadata.senderPublicKey }
