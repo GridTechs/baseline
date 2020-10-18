@@ -167,7 +167,7 @@ export class ParticipantStack {
         const sig = (await this.signMessage(
           vault[0].id!,
           this.babyJubJub?.id!,
-          Buffer.from(hash).toString('hex'),
+          hash,
         )).signature;
 
         this.sendProtocolMessage(msg.sender, Opcode.Baseline, {
@@ -189,14 +189,7 @@ export class ParticipantStack {
           // baseline this record
           console.log('generating proof...', msg, msg.payload.toString());
           const proof = await this.generateProof(msg);
-
-          // FIXME? call the verifier here w/ hash, proof, verification key
-          const nchain = nchainClientFactory(
-            this.workgroupToken,
-            this.baselineConfig?.nchainApiScheme,
-            this.baselineConfig?.nchainApiHost,
-          );
-
+          console.log(proof);
           const leaf = await this.baseline?.insertLeaf(msg.sender, this.contracts['shield'].address, payload.__hash);
           if (leaf) {
             console.log(`inserted leaf... ${leaf}`);
@@ -817,7 +810,6 @@ export class ParticipantStack {
       const vault = await this.requireVault();
       this.babyJubJub = await this.createVaultKey(vault.id!, 'babyJubJub');
       await this.createVaultKey(vault.id!, 'secp256k1');
-      // FIXME-- this should take a hardened `hd_derivation_path` param...
       this.hdwallet = await this.createVaultKey(vault.id!, 'BIP39');
       await this.registerWorkgroupOrganization();
     }
@@ -849,11 +841,10 @@ export class ParticipantStack {
     payload: Buffer,
   ): Promise<ProtocolMessage> {
     const vaults = await this.fetchVaults();
-    // const key = await this.createVaultKey(vaults[0].id!, 'secp256k1');
     const signature = (await this.signMessage(
       vaults[0].id!,
       this.hdwallet!.id!,
-      payload.toString('hex'),
+      sha256(payload.toString()),
     )).signature;
 
     return {
