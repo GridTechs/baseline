@@ -203,7 +203,8 @@ describe('baseline', () => {
             const recipient = await aliceApp.resolveOrganizationAddress();
             await bobApp.sendProtocolMessage(recipient, Opcode.Baseline, {
               id: 'uuidv4()',
-              hello: 'world',
+              name: 'hello world',
+              url: 'proto://deep/link/to/doc',
               rfp_id: null,
             });
           });

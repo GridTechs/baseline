@@ -1,6 +1,6 @@
 import { IBaselineRPC, IBlockchainService, IRegistry, IVault, baselineServiceFactory, baselineProviderProvide } from '@baseline-protocol/api';
 import { IMessagingService, messagingProviderNats, messagingServiceFactory } from '@baseline-protocol/messaging';
-import { IZKSnarkCircuitProvider, IZKSnarkCompilationArtifacts, IZKSnarkTrustedSetupArtifacts, zkSnarkCircuitProviderServiceFactory, zkSnarkCircuitProviderServiceZokrates, Element, elementify } from '../../../../core/privacy/dist/cjs'; // '@baseline-protocol/privacy';
+import { IZKSnarkCircuitProvider, IZKSnarkCompilationArtifacts, IZKSnarkTrustedSetupArtifacts, zkSnarkCircuitProviderServiceFactory, zkSnarkCircuitProviderServiceZokrates, Element, elementify, rndHex, concatenateThenHash } from '../../../../core/privacy/dist/cjs'; // '@baseline-protocol/privacy';
 import { Message as ProtocolMessage, Opcode, PayloadType, marshalProtocolMessage, unmarshalProtocolMessage } from '@baseline-protocol/types';
 import { Application as Workgroup, Invite, Vault as ProvideVault, Organization, Token, Key as VaultKey } from '@provide/types';
 import { Capabilities, Ident, NChain, Vault, capabilitiesFactory, nchainClientFactory } from 'provide-js';
@@ -188,7 +188,7 @@ export class ParticipantStack {
         } else {
           // baseline this record
           console.log('generating proof...', msg, msg.payload.toString());
-          const proof = await this.generateProof(msg);
+          const proof = await this.generateProof(JSON.parse(msg.payload.toString()));
           console.log(proof);
           const leaf = await this.baseline?.insertLeaf(msg.sender, this.contracts['shield'].address, payload.__hash);
           if (leaf) {
@@ -294,25 +294,34 @@ export class ParticipantStack {
   }
 
   async generateProof(msg: any): Promise<any> {
+    const salt = rndHex(32);
+    const senderZkPublicKey = this.babyJubJub?.publicKey!;
+    const preimage = concatenateThenHash({
+      senderPublicKey: this.marshalCircuitArg(senderZkPublicKey),
+      name: this.marshalCircuitArg(msg.doc.name),
+      url: this.marshalCircuitArg(msg.doc.url),
+      erc20ContractAddress: this.marshalCircuitArg(this.contracts['erc1820-registry'].address),
+    });
+
     const args = [
-      this.marshalCircuitArg('1'),
+      this.marshalCircuitArg(msg.__hash),
       {
         value: [
-          this.marshalCircuitArg('3'),
-          this.marshalCircuitArg('1'),
+          this.marshalCircuitArg(preimage.substring(0, 16)),
+          this.marshalCircuitArg(preimage.substring(16)),
         ],
         salt: [
-          this.marshalCircuitArg('3'),
-          this.marshalCircuitArg('5'),
+          this.marshalCircuitArg(salt.substring(0, 16)),
+          this.marshalCircuitArg(salt.substring(16)),
         ],
       },
       {
         senderPublicKey: [
-          this.marshalCircuitArg('6'),
-          this.marshalCircuitArg('7'),
+          this.marshalCircuitArg(senderZkPublicKey.substring(0, 16)),
+          this.marshalCircuitArg(senderZkPublicKey.substring(16)),
         ],
-        agreementName: this.marshalCircuitArg('8'),
-        agreementUrl: this.marshalCircuitArg('9'),
+        agreementName: this.marshalCircuitArg(msg.doc.name),
+        agreementUrl: this.marshalCircuitArg(msg.doc.url),
       }
     ];
 
@@ -824,9 +833,10 @@ export class ParticipantStack {
 
     const subscription = await this.nats?.subscribe(baselineProtocolMessageSubject, (msg, err) => {
       this.protocolMessagesRx++;
-      this.dispatchProtocolMessage(unmarshalProtocolMessage(Buffer.from(msg.data))).catch((err2) => {
-        console.log('protocol message handler encountered rejected promise', err2);
-      });
+      this.dispatchProtocolMessage(unmarshalProtocolMessage(Buffer.from(msg.data)));
+      // .catch((err2) => {
+      //   console.log('protocol message handler encountered rejected promise', err2);
+      // });
     });
 
     this.protocolSubscriptions.push(subscription);
