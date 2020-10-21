@@ -152,32 +152,66 @@ export class ParticipantStack {
     return this.workgroupCounterparties;
   }
 
+  async initBaselineProtocol(msg: ProtocolMessage): Promise<any> {
+    const vault = await this.requireVault();
+    const hash = sha256(msg.payload.toString()); // make a hash of the record...
+    const sig = (await this.signMessage(
+      vault.id!,
+      this.babyJubJub?.id!,
+      hash,
+    )).signature;
+
+    this.sendProtocolMessage(msg.sender, Opcode.Baseline, {
+      doc: JSON.parse(msg.payload.toString()),
+      hash: hash,
+      signature: sig,
+      sibling_path: [],
+    });
+  }
+
   private async dispatchProtocolMessage(msg: ProtocolMessage): Promise<any> {
     if (msg.opcode === Opcode.Baseline) {
       // TODO: acquire distributed lock; i.e. refer to redis + dislock from Provide
       // { "doc":  {}, "__hash": <sha256> } <-- our naive protocol checks for the presence of
-      // `__hash`; if it exists, we know to process verification part of the workstep.
+      // `hash`; if it exists, we know to process verification part of the workstep.
       // { "rfp_id": "adsf" } <-- this is the doc; since no `__hash` exists, hash/sign/send
       // FIXME! the above example needs a proper schema... put it in the persistence package...
 
-      const payload = JSON.parse(msg.payload.toString());
-      if (!payload.__hash) {
-        const vault = await this.fetchVaults();
-        const hash = sha256(msg.payload.toString()); // make a hash of the record...
-        const sig = (await this.signMessage(
-          vault[0].id!,
-          this.babyJubJub?.id!,
-          hash,
-        )).signature;
+      // if (!payload.sibling_path || payload.sibling_path.length === 0) {
+      //   // const vault = await this.fetchVaults();
+      //   // const hash = sha256(msg.payload.toString()); // make a hash of the record...
+      //   // const sig = (await this.signMessage(
+      //   //   vault[0].id!,
+      //   //   this.babyJubJub?.id!,
+      //   //   hash,
+      //   // )).signature;
 
-        this.sendProtocolMessage(msg.sender, Opcode.Baseline, {
-          doc: JSON.parse(msg.payload.toString()),
-          __hash: hash,
-          signature: sig,
-        });
-      } else if (payload.doc && payload.__hash) {
-        if (payload.root && payload.sibling_path) {
-          const verified = this.baseline?.verify(this.contracts['shield'].address, payload.leaf, payload.root, payload.sibling_path);
+      //   // this.sendProtocolMessage(msg.sender, Opcode.Baseline, {
+      //   //   doc: JSON.parse(msg.payload.toString()),
+      //   //   __hash: hash,
+      //   //   signature: sig,
+      //   // });
+      // }
+
+      const payload = JSON.parse(msg.payload.toString());
+      if (payload.doc) {
+        if (!payload.sibling_path || payload.sibling_path.length === 0) {
+          // baseline this new document
+          const result = await this.generateProof('preimage', JSON.parse(msg.payload.toString()));
+          console.log(result);
+
+          const leaf = await this.baseline.insertLeaf(msg.sender, this.contracts['shield'].address, result.proof.proof);
+          const siblingPath = await this.baseline?.getSiblings(msg.shield, leaf.index);
+
+          if (leaf) {
+            console.log(`inserted leaf... ${leaf}`);
+          } else {
+            return Promise.reject('failed to insert leaf');
+          }
+        } else {
+          // state transition
+          const root = payload.sibling_path[0];
+          const verified = this.baseline?.verify(this.contracts['shield'].address, payload.leaf, root, payload.sibling_path);
           if (!verified) {
             await this.sendProtocolMessage(msg.sender, Opcode.Baseline, { err: 'verification failed' });
             return Promise.reject('failed to verify');
@@ -185,17 +219,6 @@ export class ParticipantStack {
 
           this.workflowRecords[payload.doc.id] = payload.doc;
           console.log('record is baselined...', payload.doc);
-        } else {
-          // baseline this record
-          console.log('generating proof...', msg, msg.payload.toString());
-          const proof = await this.generateProof(JSON.parse(msg.payload.toString()));
-          console.log(proof);
-          const leaf = await this.baseline?.insertLeaf(msg.sender, this.contracts['shield'].address, payload.__hash);
-          if (leaf) {
-            console.log(`inserted leaf... ${leaf}`);
-          } else {
-            return Promise.reject('failed to insert leaf');
-          }
         }
       } else if (payload.signature) {
         console.log(`NOOP!!! received signature in BLINE protocol message: ${payload.signature}`);
@@ -293,22 +316,51 @@ export class ParticipantStack {
     return el.field(fieldBits || 128, 1, true);
   }
 
-  async generateProof(msg: any): Promise<any> {
-    const salt = rndHex(32);
+  async generateProof(type: string, msg: any): Promise<any> {
     const senderZkPublicKey = this.babyJubJub?.publicKey!;
-    const preimage = concatenateThenHash({
-      senderPublicKey: this.marshalCircuitArg(senderZkPublicKey),
-      name: this.marshalCircuitArg(msg.doc.name),
-      url: this.marshalCircuitArg(msg.doc.url),
-      erc20ContractAddress: this.marshalCircuitArg(this.contracts['erc1820-registry'].address),
-    });
+    let commitment: string;
+    let root: string | null = null;
+    const salt = msg.salt || rndHex(32);
+    if (msg.sibling_path && msg.sibling_path.length > 0) {
+      const siblingPath = elementify(msg.sibling_path) as Element;
+      root = siblingPath[0].hex(64);
+    }
+
+    console.log(`generating ${type} proof...\n`, msg);
+
+    switch (type) {
+      case 'preimage': // create agreement
+        const preimage = concatenateThenHash({
+          senderPublicKey: this.marshalCircuitArg(senderZkPublicKey),
+          name: this.marshalCircuitArg(msg.doc.name),
+          url: this.marshalCircuitArg(msg.doc.url),
+          erc20ContractAddress: this.marshalCircuitArg(this.contracts['erc1820-registry'].address),
+        });
+        console.log(`generating state genesis with preimage: ${preimage}; salt: ${salt}`);
+        commitment = concatenateThenHash(preimage, salt);
+        break;
+
+      case 'modify_state': // modify commitment state, nullify if applicable, etc.
+        const _commitment = concatenateThenHash({
+          senderPublicKey: this.marshalCircuitArg(senderZkPublicKey),
+          name: this.marshalCircuitArg(msg.doc.name),
+          url: this.marshalCircuitArg(msg.doc.url),
+          erc20ContractAddress: this.marshalCircuitArg(this.contracts['erc1820-registry'].address),
+        });
+        console.log(`generating state transition commitment with calculated delta: ${_commitment}; root: ${root}, salt: ${salt}`);
+        commitment = concatenateThenHash(root, _commitment, salt);
+        break;
+
+      default:
+        throw new Error('invalid proof type');
+    }
 
     const args = [
-      this.marshalCircuitArg(msg.__hash),
+      this.marshalCircuitArg(commitment), // should == what we are computing in the circuit
       {
         value: [
-          this.marshalCircuitArg(preimage.substring(0, 16)),
-          this.marshalCircuitArg(preimage.substring(16)),
+          this.marshalCircuitArg(commitment.substring(0, 16)),
+          this.marshalCircuitArg(commitment.substring(16)),
         ],
         salt: [
           this.marshalCircuitArg(salt.substring(0, 16)),
@@ -325,13 +377,16 @@ export class ParticipantStack {
       }
     ];
 
-    const computed = await this.zk?.computeWitness(this.baselineCircuitArtifacts!, args);
     const proof = await this.zk?.generateProof(
       this.baselineCircuitArtifacts?.program,
-      computed?.witness,
+      (await this.zk?.computeWitness(this.baselineCircuitArtifacts!, args)).witness,
       this.baselineCircuitSetupArtifacts?.keypair?.pk,
     );
-    return proof;
+
+    return {
+      proof: proof,
+      salt: salt,
+    };
   }
 
   async resolveMessagingEndpoint(addr: string): Promise<string> {
@@ -405,7 +460,7 @@ export class ParticipantStack {
       return Promise.reject(`workgroup not created; instance is associated with workgroup: ${this.workgroup.name}`);
     }
 
-    const resp = await this.baseline?.createWorkgroup({
+    this.workgroup = await this.baseline?.createWorkgroup({
       config: {
         baselined: true,
       },
@@ -413,8 +468,8 @@ export class ParticipantStack {
       network_id: this.baselineConfig?.networkId,
     });
 
-    this.workgroup = resp.application;
-    this.workgroupToken = resp.token.token;
+    const tokenResp = await this.createWorkgroupToken();
+    this.workgroupToken = tokenResp.accessToken || tokenResp.token;
 
     if (this.baselineConfig.initiator) {
       await this.initWorkgroup();
@@ -483,6 +538,16 @@ export class ParticipantStack {
       this.baselineConfig?.identApiHost,
     ).createToken({
       organization_id: this.org.id,
+    });
+  }
+
+  async createWorkgroupToken(): Promise<Token> {
+    return await Ident.clientFactory(
+      this.baselineConfig?.token,
+      this.baselineConfig?.identApiScheme,
+      this.baselineConfig?.identApiHost,
+    ).createToken({
+      application_id: this.workgroup.id,
     });
   }
 
