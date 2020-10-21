@@ -177,16 +177,6 @@ export class ParticipantStack {
           this.workgroupCounterparties.forEach(async recipient => {
             this.sendProtocolMessage(msg.sender, Opcode.Baseline, payload);
           });
-
-          console.log(payload);
-          const leaf = await this.baseline?.insertLeaf(msg.sender, this.contracts['shield'].address, payload.result.proof.proof);
-
-          if (leaf) {
-            console.log(`inserted leaf... ${leaf}`);
-            const siblingPath = await this.baseline?.getSiblings(msg.shield, leaf.index);
-          } else {
-            return Promise.reject('failed to insert leaf');
-          }
         } else if (payload.signatures.length < workflowSignatories) {
             if (payload.sibling_path && payload.sibling_path.length > 0) {
               // perform off-chain verification to make sure this is a legal state transition
