@@ -152,73 +152,77 @@ export class ParticipantStack {
     return this.workgroupCounterparties;
   }
 
-  async initBaselineProtocol(msg: ProtocolMessage): Promise<any> {
-    const vault = await this.requireVault();
-    const hash = sha256(msg.payload.toString()); // make a hash of the record...
-    const sig = (await this.signMessage(
-      vault.id!,
-      this.babyJubJub?.id!,
-      hash,
-    )).signature;
-
-    this.sendProtocolMessage(msg.sender, Opcode.Baseline, {
-      doc: JSON.parse(msg.payload.toString()),
-      hash: hash,
-      signature: sig,
-      sibling_path: [],
-    });
-  }
-
   private async dispatchProtocolMessage(msg: ProtocolMessage): Promise<any> {
     if (msg.opcode === Opcode.Baseline) {
-      // TODO: acquire distributed lock; i.e. refer to redis + dislock from Provide
-      // { "doc":  {}, "__hash": <sha256> } <-- our naive protocol checks for the presence of
-      // `hash`; if it exists, we know to process verification part of the workstep.
-      // { "rfp_id": "adsf" } <-- this is the doc; since no `__hash` exists, hash/sign/send
-      // FIXME! the above example needs a proper schema... put it in the persistence package...
-
-      // if (!payload.sibling_path || payload.sibling_path.length === 0) {
-      //   // const vault = await this.fetchVaults();
-      //   // const hash = sha256(msg.payload.toString()); // make a hash of the record...
-      //   // const sig = (await this.signMessage(
-      //   //   vault[0].id!,
-      //   //   this.babyJubJub?.id!,
-      //   //   hash,
-      //   // )).signature;
-
-      //   // this.sendProtocolMessage(msg.sender, Opcode.Baseline, {
-      //   //   doc: JSON.parse(msg.payload.toString()),
-      //   //   __hash: hash,
-      //   //   signature: sig,
-      //   // });
-      // }
+      const vault = await this.requireVault();
+      const workflowSignatories = 2;
 
       const payload = JSON.parse(msg.payload.toString());
       if (payload.doc) {
-        if (!payload.sibling_path || payload.sibling_path.length === 0) {
-          // baseline this new document
-          const result = await this.generateProof('preimage', JSON.parse(msg.payload.toString()));
-          console.log(result);
+        if (!payload.sibling_path) {
+          payload.sibling_path = [];
+        }
+        if (!payload.signatures) {
+          payload.signatures = [];
+        }
+        if (!payload.hash) {
+          payload.hash = sha256(JSON.stringify(payload.doc));
+        }
 
-          const leaf = await this.baseline.insertLeaf(msg.sender, this.contracts['shield'].address, result.proof.proof);
-          const siblingPath = await this.baseline?.getSiblings(msg.shield, leaf.index);
+        if (payload.signatures.length === 0) {
+          // baseline this new document
+          payload.result = await this.generateProof('preimage', JSON.parse(msg.payload.toString()));
+          const signature = (await this.signMessage(vault.id!, this.babyJubJub?.id!, payload.result.proof.proof)).signature;
+          payload.signatures = [signature];
+          this.workgroupCounterparties.forEach(async recipient => {
+            this.sendProtocolMessage(msg.sender, Opcode.Baseline, payload);
+          });
+
+          console.log(payload);
+          const leaf = await this.baseline?.insertLeaf(msg.sender, this.contracts['shield'].address, payload.result.proof.proof);
 
           if (leaf) {
             console.log(`inserted leaf... ${leaf}`);
+            const siblingPath = await this.baseline?.getSiblings(msg.shield, leaf.index);
           } else {
             return Promise.reject('failed to insert leaf');
           }
-        } else {
-          // state transition
-          const root = payload.sibling_path[0];
-          const verified = this.baseline?.verify(this.contracts['shield'].address, payload.leaf, root, payload.sibling_path);
-          if (!verified) {
-            await this.sendProtocolMessage(msg.sender, Opcode.Baseline, { err: 'verification failed' });
-            return Promise.reject('failed to verify');
-          }
+        } else if (payload.signatures.length < workflowSignatories) {
+            if (payload.sibling_path && payload.sibling_path.length > 0) {
+              // perform off-chain verification to make sure this is a legal state transition
+              const root = payload.sibling_path[0];
+              const verified = this.baseline?.verify(this.contracts['shield'].address, payload.leaf, root, payload.sibling_path);
+              if (!verified) {
+                console.log('WARNING-- off-chain verification of proposed state transition failed...');
+                this.workgroupCounterparties.forEach(async recipient => {
+                  this.sendProtocolMessage(recipient, Opcode.Baseline, { err: 'verification failed' });
+                });
+                return Promise.reject('failed to verify');
+              }
+            }
 
-          this.workflowRecords[payload.doc.id] = payload.doc;
-          console.log('record is baselined...', payload.doc);
+            // sign state transition
+            const signature = (await this.signMessage(vault.id!, this.babyJubJub?.id!, payload.hash)).signature;
+            payload.signatures.push(signature);
+            this.workgroupCounterparties.forEach(async recipient => {
+              this.sendProtocolMessage(recipient, Opcode.Baseline, payload);
+            });
+        } else {
+          // create state transition commitment
+          payload.result = await this.generateProof('modify_state', JSON.parse(msg.payload.toString()));
+          console.log(payload);
+
+          const leaf = await this.baseline?.insertLeaf(msg.sender, this.contracts['shield'].address, payload.result.proof.proof);
+          if (leaf) {
+            console.log(`inserted leaf... ${leaf}`);
+            payload.sibling_path = (await this.baseline!.getSiblings(msg.shield, leaf.index)).map(node => node.index);
+            payload.sibling_path?.push(leaf.index);
+            this.workgroupCounterparties.forEach(async recipient => {
+              await this.sendProtocolMessage(recipient, Opcode.Baseline, payload);
+            });
+        } else {
+            return Promise.reject('failed to insert leaf');
+          }
         }
       } else if (payload.signature) {
         console.log(`NOOP!!! received signature in BLINE protocol message: ${payload.signature}`);
@@ -331,10 +335,11 @@ export class ParticipantStack {
     switch (type) {
       case 'preimage': // create agreement
         const preimage = concatenateThenHash({
+          erc20ContractAddress: this.marshalCircuitArg(this.contracts['erc1820-registry'].address),
           senderPublicKey: this.marshalCircuitArg(senderZkPublicKey),
           name: this.marshalCircuitArg(msg.doc.name),
           url: this.marshalCircuitArg(msg.doc.url),
-          erc20ContractAddress: this.marshalCircuitArg(this.contracts['erc1820-registry'].address),
+          hash: this.marshalCircuitArg(msg.hash),
         });
         console.log(`generating state genesis with preimage: ${preimage}; salt: ${salt}`);
         commitment = concatenateThenHash(preimage, salt);
@@ -345,7 +350,7 @@ export class ParticipantStack {
           senderPublicKey: this.marshalCircuitArg(senderZkPublicKey),
           name: this.marshalCircuitArg(msg.doc.name),
           url: this.marshalCircuitArg(msg.doc.url),
-          erc20ContractAddress: this.marshalCircuitArg(this.contracts['erc1820-registry'].address),
+          hash: this.marshalCircuitArg(msg.hash),
         });
         console.log(`generating state transition commitment with calculated delta: ${_commitment}; root: ${root}, salt: ${salt}`);
         commitment = concatenateThenHash(root, _commitment, salt);
@@ -384,6 +389,7 @@ export class ParticipantStack {
     );
 
     return {
+      doc: msg.doc,
       proof: proof,
       salt: salt,
     };
